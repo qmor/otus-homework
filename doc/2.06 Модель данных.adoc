@@ -1,1 +1,39 @@
 === Модель данных
+
+
+[cols="2^8"]
+|===
+| Сущность | Описание | Поля
+|User
+|Основная сущность - сотрудник предприятия - пользователь.
+|user_id (PK), email, full_name, avatar_url, status (active/blocked), role, created_at, updated_at
+
+|GroupChat
+|Группа или канал для общения.
+|chat_id (PK), name, type (public/private), owner_id (FK -> User), created_at, is_closed, max_participants, description, avatar_url
+
+|DirectChat
+|Личный чат между двумя пользователями.
+|chat_id (PK), user1_id (FK -> User), user2_id (FK -> User), created_at
+
+|Message
+|Сообщение в чате.
+|message_id (PK), chat_id (FK -> GroupChat или DirectChat), sender_id (FK -> User), text, media_id (nullable) , sent_at, is_edited, is_deleted
+
+
+|Media
+|Файл, загруженный пользователем.	
+|media_id (PK), message_id (FK -> Message), user_id (FK -> User), file_key (S3-ключ), file_size, mime_type, uploaded_at
+
+|Уведомление (Notification)	
+|Уведомление о новом сообщении.	
+|notif_id (PK), user_id (FK -> User), message_id (FK -> Message), type (new_message, mention, group_invite), is_read, sent_at, delivery_status (sent/delivered/failed)
+
+|(UserChatRelation)
+|Связь пользователя с чатом (для прав доступа, истории).	
+|user_chat_id (PK), user_id (FK -> User), chat_id (FK -> GroupChat или DirectChat), role (admin/member), last_read_message_id (FK -> Message), is_muted, joined_at
+
+
+|SearchIndex
+|Индекс для Elasticsearch.	
+|message_id (PK), chat_id, user_id, text, sent_at, is_deleted
