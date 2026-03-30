@@ -1,1 +1,246 @@
 === Форматы взаимодействия
+
+В этом разделе описаны форматы данных и протоколы, используемые для взаимодействия между компонентами системы.
+
+==== REST API (Swagger/OpenAPI)
+
+*Применение:* Клиент <> API Gateway, внешние интеграции
+*Протокол:* HTTPS (HTTP/1.1, HTTP/2)
+*Формат:* JSON
+*Документация:* OpenAPI 3.0, доступна по /swagger
+*Пример запроса:*
+
+[source,json]
+----
+POST /api/auth/login
+Content-Type: application/json
+
+{
+  "login": "user@example.com",
+  "otp": "123456"
+}
+----
+
+*Пример ответа:*
+
+[source,json]
+----
+{
+  "jwt_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "expires_at": 1774853600,
+  "user_id": "uuid-1234-5678-90ab-cdef12345678"
+}
+----
+
+==== gRPC (Protobuf)
+
+*Применение:* API Gateway <> Сервисы (внутренняя коммуникация)
+*Протокол:* gRPC over HTTP/2
+*Формат:* Protobuf (бинарный формат)
+*Преимущества:* Высокая производительность, строгая типизация, автоматическая генерация кода
+*Пример .proto файла:*
+
+[source,protobuf]
+----
+syntax = "proto3";
+
+package chat;
+
+message SendMessageRequest {
+  string chat_id = 1;
+  string text = 2;
+  string media_id = 3;
+}
+
+message SendMessageResponse {
+  string message_id = 1;
+  int64 sent_at = 2;
+}
+----
+
+==== WebSocket
+
+*Применение:* Клиент <> API Gateway (реальное время)
+*Протокол:* WebSocket (WS/WSS)
+*Формат:* JSON
+*Использование:* Подписка на новые сообщения, статусы набора текста, онлайн-статусы
+*Пример сообщения:*
+
+[source,json]
+----
+{
+  "type": "message",
+  "chat_id": "uuid-1234",
+  "message": {
+    "message_id": "uuid-5678",
+    "sender_id": "uuid-90ab",
+    "text": "Привет!",
+    "sent_at": 1774853600
+  }
+}
+----
+
+==== Kafka (Брокер сообщений)
+
+*Применение:* Асинхронная коммуникация между сервисами
+*Протокол:* TCP (PLAINTEXT/TLS)
+*Формат:* Protobuf/Avro/JSON
+*Schema Registry:* Confluent Schema Registry для управления схемами
+*Пример события:*
+
+[source,protobuf]
+----
+syntax = "proto3";
+
+package events;
+
+message MessageCreatedEvent {
+  string message_id = 1;
+  string chat_id = 2;
+  string sender_id = 3;
+  string text = 4;
+  string media_id = 5;
+  int64 sent_at = 6;
+}
+----
+
+*Топики Kafka:*
+* `chat.message.created` - новые сообщения
+* `chat.message.deleted` - удаленные сообщения
+* `chat.group.created` - создание групповых чатов
+* `media.uploaded` - загрузка медиа
+* `user.blocked` - блокировка пользователя
+
+==== Базы данных
+
+*PostgreSQL:*
+*Протокол:* TCP
+*Формат:* SQL + бинарные данные
+*Использование:* Хранение структурированных данных (пользователи, чаты, сообщения)
+
+*Redis:*
+*Протокол:* TCP
+*Формат:* Key-Value (строки, хэши, списки)
+*Использование:* Кэширование, сессии, очереди
+
+*Elasticsearch:*
+*Протокол:* HTTP (REST)
+*Формат:* JSON
+*Использование:* Полнотекстовый поиск, индексация сообщений
+
+==== Внешние интеграции
+
+*LDAP (Active Directory):*
+*Протокол:* LDAP + TLS
+*Формат:* LDIF
+*Использование:* Синхронизация пользователей, проверка учетных данных
+
+
+*SMTP (Email):*
+*Протокол:* SMTP + TLS
+*Формат:* MIME
+*Использование:* Отправка OTP, уведомлений по почте
+
+
+
+
+Примеры Protobuf схем для ключевых сущностей
+
+[source,protobuf]
+----
+syntax = "proto3";
+
+package messenger;
+
+// Сообщение
+message Message {
+  string message_id = 1;
+  string chat_id = 2;
+  string sender_id = 3;
+  string text = 4;
+  string media_id = 5;
+  int64 sent_at = 6;
+  int64 edited_at = 7;
+  bool is_deleted = 8;
+}
+
+// Пользователь
+message User {
+  string user_id = 1;
+  string login = 2;
+  string email = 3;
+  string full_name = 4;
+  string avatar_url = 5;
+  string status = 6;  // active, blocked
+  string role = 7;
+  int64 created_at = 8;
+  int64 updated_at = 9;
+}
+
+// Чат
+message Chat {
+  string chat_id = 1;
+  string name = 2;
+  string type = 3;  // direct, group, channel
+  string owner_id = 4;
+  bool is_closed = 5;
+  int64 created_at = 6;
+}
+----
+
+===
+
+Swagger/OpenAPI документация
+
+Документация REST API доступна по адресу `/swagger` и включает:
+* Все публичные эндпоинты
+* Схемы запросов и ответов
+* Примеры использования
+* Информацию об аутентификации (JWT)
+
+Пример OpenAPI спецификации:
+
+[source,yaml]
+----
+openapi: 3.0.0
+info:
+  title: F.U.C.K. Messenger API
+  version: 1.0.0
+  description: API для корпоративного мессенджера
+
+servers:
+  - url: https://api.messenger.company.com/v1
+    description: Production server
+
+paths:
+  /auth/login:
+    post:
+      summary: Аутентификация пользователя
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                login:
+                  type: string
+                otp:
+                  type: string
+      responses:
+        '200':
+          description: Успешная аутентификация
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jwt_token:
+                    type: string
+                  expires_at:
+                    type: integer
+                  user_id:
+                    type: string
+        '401':
+          description: Неверные учетные данные
+----

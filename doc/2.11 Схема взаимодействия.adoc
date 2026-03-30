@@ -1,1 +1,302 @@
 === Схема взаимодействия
+
+Ниже представлены ключевые сценарии взаимодействия между компонентами системы с указанием протоколов и технологий.
+
+==== Сценарий 1: Аутентификация и получение токена
+
+.Шаг 1: Клиент отправляет запрос на вход
+[source,http]
+----
+POST /api/auth/login
+Content-Type: application/json
+
+{
+  "login": "user@example.com",
+  "otp": "123456"
+}
+----
+
+.Шаг 2: Запрос проходит через Load Balancer -> API Gateway
+* Load Balancer распределяет нагрузку между репликами API Gateway
+* API Gateway выполняет rate limiting (100 req/sec на IP)
+
+.Шаг 3: API Gateway -> Auth Service (gRPC)
+* Протокол: gRPC over HTTP/2
+* Формат: Protobuf
+* Retry: 3 попытки с экспоненциальной задержкой (100ms, 300ms, 900ms)
+* Circuit Breaker: открывает цепочку если сервис недоступен > 5 раз
+
+[source,protobuf]
+----
+syntax = "proto3";
+
+package auth;
+
+message LoginRequest {
+  string login = 1;
+  string otp = 2;
+}
+
+message LoginResponse {
+  string jwt_token = 1;
+  int64 expires_at = 2;
+}
+----
+
+.Шаг 4: Auth Service -> User Service (gRPC) -> PostgreSQL
+* Проверка учетных данных через LDAP
+* Верификация OTP
+* Кэширование результата в Redis (TTL = 5 минут)
+
+.Шаг 5: Auth Service генерирует JWT и возвращает клиенту
+* Протокол: HTTPS (REST)
+* Формат: JSON (OpenAPI/Swagger)
+
+[source,json]
+----
+{
+  "jwt_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "expires_at": 1774853600,
+  "user_id": "uuid-1234-5678-90ab-cdef12345678"
+}
+----
+
+==== Сценарий 2: Отправка текстового сообщения
+
+.Шаг 1: Клиент -> API Gateway (WebSocket/HTTPS)
+[source,http]
+----
+POST /api/chats/{chat_id}/messages
+Content-Type: application/json
+Authorization: Bearer <jwt_token>
+
+{
+  "text": "Привет, как дела?",
+  "media_id": null
+}
+----
+
+.Шаг 2: API Gateway -> Chat Service (gRPC)
+* Протокол: gRPC over HTTP/2
+* Формат: Protobuf
+* Rate Limiter: 1000 req/sec на пользователя
+
+[source,protobuf]
+----
+syntax = "proto3";
+
+package chat;
+
+message SendMessageRequest {
+  string chat_id = 1;
+  string text = 2;
+  string media_id = 3;
+}
+
+message SendMessageResponse {
+  string message_id = 1;
+  int64 sent_at = 2;
+}
+----
+
+.Шаг 3: Chat Service -> PostgreSQL (запись сообщения)
+* Транзакционное сохранение сообщения
+* Получение message_id
+* CQRS: Command часть - запись в PostgreSQL
+
+.Шаг 4: Chat Service -> Kafka (публикация события)
+* Топик: `chat.message.created`
+* Формат: Protobuf/Avro
+* Репликация: min.insync.replicas = 2
+
+[source,protobuf]
+----
+syntax = "proto3";
+
+package events;
+
+message MessageCreatedEvent {
+  string message_id = 1;
+  string chat_id = 2;
+  string sender_id = 3;
+  string text = 4;
+  string media_id = 5;
+  int64 sent_at = 6;
+}
+----
+
+.Шаг 5: Chat Service -> Клиент (возврат результата)
+* Протокол: HTTPS (REST)
+* Формат: JSON
+
+.Шаг 6: Асинхронно - Notification Service подписывается на Kafka
+* Получает событие `MessageCreatedEvent`
+* Retry: 3 попытки с экспоненциальной задержкой
+
+.Шаг 7: Notification Service -> Push Provider (APNs/Firebase)
+* Отправка push-уведомления получателю
+* Circuit Breaker: если сервис недоступен > 3 раза
+
+.Шаг 8: Notification Service -> Search Service
+* Добавление сообщения в поисковый индекс (Elasticsearch)
+* Асинхронная индексация
+
+==== Сценарий 3: Загрузка медиа
+
+.Шаг 1: Клиент -> Media Service (запрос presigned URL)
+[source,http]
+----
+POST /api/media/upload/init
+Content-Type: application/json
+Authorization: Bearer <jwt_token>
+
+{
+  "file_name": "photo.jpg",
+  "file_size": 5242880,
+  "content_type": "image/jpeg"
+}
+----
+
+.Шаг 2: Media Service -> S3 (генерация presigned URL)
+* Протокол: HTTPS (REST)
+* Формат: JSON
+* Multipart upload для файлов > 100MB
+
+.Шаг 3: Media Service -> Клиент (возврат presigned URL)
+* Протокол: HTTPS (REST)
+* Формат: JSON
+
+.Шаг 4: Клиент -> S3 (прямая загрузка файла)
+* Протокол: HTTPS (multipart/form-data)
+* Использование CDN для ускорения
+* Кэширование в Redis после загрузки
+
+.Шаг 5: S3 -> Kafka (событие загрузки)
+* Топик: `media.uploaded`
+* Формат: JSON/Avro
+
+.Шаг 6: Media Service -> Redis (кэширование метаданных)
+* Сохранение метаданных для быстрого доступа
+* TTL = 10 минут
+
+.Шаг 7: Media Service -> PostgreSQL (сохранение метаданных)
+* Запись информации о файле в БД
+* Связь с сообщением через media_id
+
+.Шаг 8: Search Service -> Elasticsearch (индексация)
+* Добавление медиа в поисковый индекс
+* Асинхронная обработка
+
+==== Сценарий 4: Поиск сообщений
+
+.Шаг 1: Клиент -> API Gateway
+[source,http]
+----
+GET /api/search?q=текст&chat_id=xxx&limit=20
+Authorization: Bearer <jwt_token>
+----
+
+.Шаг 2: API Gateway -> Search Service (gRPC)
+* Протокол: gRPC over HTTP/2
+* Формат: Protobuf
+* Rate Limiter: 100 req/sec на пользователя
+
+[source,protobuf]
+----
+syntax = "proto3";
+
+package search;
+
+message SearchRequest {
+  string query = 1;
+  string chat_id = 2;
+  int32 limit = 3;
+}
+
+message SearchResponse {
+  repeated SearchResult results = 1;
+}
+
+message SearchResult {
+  string message_id = 1;
+  string chat_id = 2;
+  string text = 3;
+  int64 sent_at = 4;
+}
+----
+
+.Шаг 3: Search Service -> Elasticsearch
+* Протокол: HTTP (REST)
+* Формат: JSON
+* Выполнение полнотекстового поиска
+* Шардирование по chat_id
+
+.Шаг 4: Search Service -> API Gateway -> Клиент
+* Возврат результатов поиска
+* Кэширование популярных запросов в Redis
+
+==== Сценарий 5: Создание группового чата
+
+.Шаг 1: Клиент -> API Gateway
+[source,http]
+----
+POST /api/chats/group
+Content-Type: application/json
+Authorization: Bearer <jwt_token>
+
+{
+  "name": "Команда проекта",
+  "type": "private",
+  "description": "Чат для обсуждения проекта"
+}
+----
+
+.Шаг 2: API Gateway -> Group Chat Service (gRPC)
+* Протокол: gRPC over HTTP/2
+* Формат: Protobuf
+
+.Шаг 3: Group Chat Service -> PostgreSQL
+* Создание записи о чате
+* Создание связей с участниками
+* Транзакционная операция
+
+.Шаг 4: Group Chat Service -> Kafka
+* Топик: `chat.group.created`
+* Событие для уведомлений и индексации
+* Формат: Protobuf
+
+.Шаг 5: Notification Service -> участники
+* Отправка уведомлений о приглашении в чат
+* Асинхронная обработка
+
+==== Ключевые моменты взаимодействия
+
+*Протоколы:*
+* Клиент <> API Gateway: HTTPS (REST), WebSocket
+* API Gateway <> Сервисы: gRPC (Protobuf)
+* Сервисы <> Базы данных: TCP (PostgreSQL, Redis)
+* Сервисы <> Брокер сообщений: TCP (Kafka)
+* Сервисы <> Внешние системы: HTTPS, SMTP
+
+*Форматы данных:*
+* REST API: JSON (OpenAPI/Swagger) - документация в /swagger
+* gRPC: Protobuf (бинарный формат) - .proto файлы в репозитории proto/
+* Kafka: Protobuf/Avro/JSON - с Schema Registry
+* WebSocket: JSON
+
+*Асинхронная обработка:*
+* Уведомления (push, email)
+* Индексация в поиске (Elasticsearch)
+* Обработка медиа (конвертация, создание превью)
+* Аналитика и логирование
+* Отправка OTP через почтовый сервер
+
+*Синхронная обработка:*
+* Авторизация
+* Чтение истории чатов
+* Загрузка профиля
+* Отправка сообщений
+
+*1 бизнес-событие -> несколько технических запросов:*
+* Отправка сообщения: 1 запрос к API Gateway -> 1 проверка токена -> 1 запись в БД -> 1 публикация в Kafka -> 1 уведомление -> 1 индексация = 6 технических запросов
+* Загрузка медиа: 1 запрос presigned URL -> 1 загрузка в S3 -> 1 событие в Kafka -> 1 запись в БД -> 1 индексация = 5 технических запросов
