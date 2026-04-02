@@ -3,3 +3,100 @@
 ifndef::imagesdir[:imagesdir: {docdir}/images]
 
 image::hla.png[]
+
+=== Общая схема архитектуры
+
+На схеме представлены основные компоненты системы:
+* Клиенты (UI) - мобильные, десктопные и веб-версии мессенджера
+* API Gateway - входная точка для клиентских подключений
+* Load Balancer - балансировка нагрузки
+* Service Discovery - динамический поиск сервисов
+* Сервис авторизации - аутентификация и авторизация пользователей
+* Сервис директ чатов - функциональность личных чатов
+* Сервис пользователей - управление профилями пользователей
+* Сервис медиа - хранение и доставка мультимедиа
+* Сервис групповых чатов - каналы и групповые чаты
+* Сервис уведомлений - доставка сообщений и OTP
+* Брокер сообщений (Kafka) - асинхронное взаимодействие
+* Сервис поиска - полнотекстовый поиск по сообщениям
+* Сервис безопасности - управление доступом и шифрованием
+* Базы данных - PostgreSQL, Redis, Elasticsearch, S3/MinIO
+* Мониторинг и логирование - Prometheus, Grafana, ELK Stack
+
+Подробное описание компонентов см. в разделе <<2.02 Описание концептуальной архитектуры>>
+
+=== Схема взаимодействия компонентов
+
+[cols="2^8"]
+|===
+
+|Уровень|Компоненты|Протоколы
+
+|Периметр|Load Balancer ->  API Gateway|HTTPS, HTTP/2
+
+|Граничный уровень|API Gateway -> Service Discovery|gRPC, DNS
+
+|Сервисы|API Gateway -> Auth Service, User Service, Chat Service, Media Service, Notification Service, Search Service|gRPC (Protobuf), REST (JSON)
+
+|Брокер сообщений|Chat Service, Media Service, Notification Service -> Kafka|TCP (Kafka Protocol), Avro/JSON
+
+|Хранилища|Chat Service, User Service -> PostgreSQL|TCP (PostgreSQL Protocol)
+|Media Service -> S3/MinIO|HTTPS (REST API)
+|Search Service -> Elasticsearch|HTTPS (REST API)
+|Все сервисы -> Redis|TCP (Redis Protocol)
+
+|Внешние интеграции|Auth Service -> LDAP|LDAP + TLS
+|Notification Service -> Mail Server|SMTP + TLS
+
+
+|===
+
+=== Потоки данных
+
+[cols="2^8"]
+|===
+
+|Поток|Направление|Протокол|Критичность
+
+|Авторизация|Клиент -> API Gateway -> Auth Service -> User Service -> LDAP -> Клиент|HTTPS, gRPC, LDAP|Высокая
+
+|Отправка сообщения|Клиент -> API Gateway -> Chat Service -> PostgreSQL -> Kafka -> Notification Service -> Push Provider -> Клиент|HTTPS, gRPC, TCP, HTTPS|Высокая
+
+|Загрузка медиа|Клиент -> API Gateway -> Media Service -> S3 -> Kafka -> Search Service|HTTPS, HTTPS, TCP|Средняя
+
+|Поиск|Клиент -> API Gateway -> Search Service -> Elasticsearch -> Клиент|HTTPS, HTTPS|Средняя
+
+|Уведомления|Chat Service -> Kafka -> Notification Service -> Клиент|TCP, HTTPS|Высокая
+
+|===
+
+=== Масштабируемость компонентов
+
+[cols="2^8"]
+|===
+
+|Компонент|Масштабируемость|Механизм
+
+|API Gateway|Горизонтальное масштабирование|Добавление реплик, балансировка нагрузки
+
+|Load Balancer|Горизонтальное масштабирование|Добавление реплик, DNS round-robin
+
+|Сервис авторизации|Горизонтальное масштабирование + кэширование|Реплики, Redis для JWT
+
+|Сервис чатов|CQRS + горизонтальное масштабирование|Разделение чтения/записи, реплики PostgreSQL
+
+|Сервис медиа|Горизонтальное масштабирование + CDN|Реплики, CDN для доставки
+
+|Сервис уведомлений|Горизонтальное масштабирование + Kafka|Реплики, Kafka партиции
+
+|Сервис поиска|Кластеризация + шардинг|Elasticsearch ноды, шарды
+
+|Kafka|Кластеризация|Брокеры, партиции, репликация
+
+|PostgreSQL|Репликация + шардинг|Primary-replica, шардинг по user_id
+
+|Redis|Кластеризация|Redis Cluster, репликация
+
+|Elasticsearch|Кластеризация + шардинг|Ноды, шарды, реплики
+
+|===
