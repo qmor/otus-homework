@@ -88,7 +88,39 @@
 
 ==== CQRS (Command Query Responsibility Segregation)
 
-Большое соотношение чтения к записям делает выгодным использование cqrs 
+Большое соотношение чтения к записям делает выгодным использование CQRS
+
+*Разделение на Command и Query:*
+
+**Command Path (запись):**
+- Chat Service (Command) - обрабатывает команды создания, редактирования, удаления сообщений
+- User Service (Command) - обрабатывает команды создания, обновления пользователей
+- Group Chat Service (Command) - обрабатывает команды создания, обновления чатов
+- Запись в PostgreSQL (Primary)
+- Публикация событий в Kafka (MessageCreated, MessageEdited, MessageDeleted)
+
+**Query Path (чтение):**
+- Chat Service (Query) - чтение истории чатов из PostgreSQL Read Replicas
+- User Service (Query) - чтение профилей пользователей из PostgreSQL Read Replicas
+- Search Service - полнотекстовый поиск в Elasticsearch
+- Кэширование в Redis для часто запрашиваемых данных
+
+**Read Models:**
+- *MessagesReadModel:* оптимизированная структура для чтения истории чатов (предварительно агрегированные данные)
+- *UserReadModel:* кэшированные профили пользователей
+- *ChatReadModel:* агрегированная информация о чатах (последние сообщения, количество участников)
+
+**Обновление Read Models:**
+- CDC (Debezium) отслеживает изменения в PostgreSQL WAL
+- Изменения публикуются в Kafka topic `pg.changes`
+- Read Services подписываются на изменения и обновляют read models
+- Elasticsearch индексирует сообщения в реальном времени
+- Redis кэш обновляется при изменении данных
+
+**Семантика доставки:**
+- *At-least-once:* Kafka гарантирует доставку сообщений минимум один раз
+- *Exactly-once:* Использование идемпотентных операций и дедупликации по message_id
+- Транзакционная запись в PostgreSQL + публикация в Kafka (outbox pattern) 
 
 ==== CDN (Content Delivery Network)
 

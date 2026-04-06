@@ -110,6 +110,255 @@ message MessageCreatedEvent {
 * `chat.group.created` - создание групповых чатов
 * `media.uploaded` - загрузка медиа
 * `user.blocked` - блокировка пользователя
+* `pg.changes` - CDC события от Debezium
+
+==== CDC (Change Data Capture) - Форматы событий
+
+*Применение:* Синхронизация read models через Debezium
+*Протокол:* Kafka (TCP)
+*Формат:* JSON/Avro с метаданными об изменениях
+
+*Пример CDC события (Debezium format):*
+
+[source,json]
+----
+{
+  "schema": {
+    "type": "struct",
+    "fields": [
+      {
+        "type": "struct",
+        "fields": [
+          {"type": "string", "optional": false, "field": "message_id"},
+          {"type": "string", "optional": false, "field": "chat_id"},
+          {"type": "string", "optional": false, "field": "sender_id"},
+          {"type": "string", "optional": true, "field": "text"},
+          {"type": "int64", "optional": false, "field": "sent_at"}
+        ],
+        "optional": false,
+        "name": "messenger.messages.Value",
+        "field": "after"
+      },
+      {
+        "type": "struct",
+        "fields": [
+          {"type": "string", "optional": false, "field": "version"},
+          {"type": "string", "optional": false, "field": "connector"},
+          {"type": "string", "optional": false, "field": "name"},
+          {"type": "int64", "optional": false, "field": "ts_ms"},
+          {"type": "string", "optional": true, "field": "snapshot"},
+          {"type": "string", "optional": false, "field": "db"},
+          {"type": "string", "optional": false, "field": "sequence"},
+          {"type": "string", "optional": true, "field": "table"},
+          {"type": "int64", "optional": false, "field": "server_id"},
+          {"type": "string", "optional": true, "field": "gtid"},
+          {"type": "string", "optional": false, "field": "file"},
+          {"type": "int64", "optional": false, "field": "pos"},
+          {"type": "int32", "optional": false, "field": "row"},
+          {"type": "int64", "optional": true, "field": "thread"},
+          {"type": "string", "optional": true, "field": "query"}
+        ],
+        "optional": false,
+        "name": "io.debezium.connector.postgresql.Source",
+        "field": "source"
+      },
+      {"type": "string", "optional": false, "field": "op"},
+      {"type": "int64", "optional": true, "field": "ts_ms"}
+    ],
+    "optional": false,
+    "name": "messenger.messages.Envelope"
+  },
+  "payload": {
+    "before": null,
+    "after": {
+      "message_id": "uuid-1234-5678-90ab-cdef12345678",
+      "chat_id": "uuid-9876-5432-10ab-cdef12345678",
+      "sender_id": "uuid-1111-2222-3333-444455556666",
+      "text": "Привет, как дела?",
+      "sent_at": 1774853600000
+    },
+    "source": {
+      "version": "2.3.4.Final",
+      "connector": "postgresql",
+      "name": "messenger",
+      "ts_ms": 1774853600000,
+      "snapshot": "false",
+      "db": "messenger_db",
+      "sequence": "[\"24244384\",\"24244384\"]",
+      "table": "messages",
+      "server_id": 0,
+      "file": "000000010000000000000001",
+      "pos": 234,
+      "row": 0
+    },
+    "op": "c",
+    "ts_ms": 1774853600000
+  }
+}
+----
+
+*Типы операций (op field):*
+* `c` - create (INSERT)
+* `u` - update (UPDATE)
+* `d` - delete (DELETE)
+* `r` - read (snapshot)
+
+==== Outbox Pattern - Формат событий
+
+*Применение:* Обеспечение exactly-once семантики при публикации в Kafka
+*Протокол:* Kafka (TCP)
+*Формат:* JSON/Protobuf
+
+*Таблица outbox в PostgreSQL:*
+
+[source,sql]
+----
+CREATE TABLE outbox (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    aggregate_type VARCHAR(50) NOT NULL,  -- 'message', 'user', 'chat'
+    aggregate_id UUID NOT NULL,           -- message_id, user_id, chat_id
+    event_type VARCHAR(100) NOT NULL,     -- 'MessageCreated', 'UserUpdated'
+    payload JSONB NOT NULL,               -- данные события
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    processed BOOLEAN DEFAULT FALSE,
+    processed_at TIMESTAMP
+);
+
+CREATE INDEX idx_outbox_processed ON outbox(processed, created_at);
+----
+
+*Пример события в outbox:*
+
+[source,json]
+----
+{
+  "id": "uuid-outbox-1234",
+  "aggregate_type": "message",
+  "aggregate_id": "uuid-message-5678",
+  "event_type": "MessageCreated",
+  "payload": {
+    "message_id": "uuid-message-5678",
+    "chat_id": "uuid-chat-9012",
+    "sender_id": "uuid-user-3456",
+    "text": "Привет, как дела?",
+    "sent_at": 1774853600
+  },
+  "created_at": "2024-01-01T12:00:00Z",
+  "processed": false,
+  "processed_at": null
+}
+----
+
+*Процесс обработки outbox:*
+1. Транзакционно записываем бизнес-данные и событие в outbox
+2. Debezium читает из outbox и публикует в Kafka
+3. Consumer обрабатывает событие с идемпотентной логикой
+
+
+
+*Формат подтверждения от Consumer:*
+
+[source,json]
+----
+{
+  "outbox_id": "uuid-outbox-1234",
+  "aggregate_type": "message",
+  "aggregate_id": "uuid-message-5678",
+  "event_type": "MessageCreated",
+  "consumer_id": "search-service",
+  "processed_at": "2024-01-01T12:05:00Z",
+  "status": "PROCESSED"
+}
+----
+
+*Описание полей подтверждения:*
+- `outbox_id` - идентификатор записи в outbox таблице
+- `aggregate_type` - тип агрегата (message, user, chat)
+- `aggregate_id` - идентификатор агрегата
+- `event_type` - тип события
+- `consumer_id` - идентификатор сервиса-потребителя
+- `processed_at` - время успешной обработки
+- `status` - статус обработки (PROCESSED, FAILED)
+
+
+==== Семантика доставки сообщений
+
+*At-least-once (минимум один раз):*
+
+*Характеристики:*
+- Kafka гарантирует доставку сообщений минимум один раз
+- Возможны дубликаты сообщений
+- Используется для некритичных операций (уведомления, индексация)
+
+*Обработка дубликатов:*
+- Дедупликация по message_id или event_id
+- Идемпотентные операции (upsert вместо insert)
+- Логирование дубликатов для мониторинга
+
+*Пример реализации:*
+
+[source,protobuf]
+----
+syntax = "proto3";
+
+package events;
+
+message MessageCreatedEvent {
+  string message_id = 1;  // используется для дедупликации
+  string chat_id = 2;
+  string sender_id = 3;
+  string text = 4;
+  string media_id = 5;
+  int64 sent_at = 6;
+  int64 event_timestamp = 7;  // для отслеживания порядка
+}
+----
+
+*Exactly-once (ровно один раз):*
+
+*Характеристики:*
+- Гарантирует, что сообщение будет обработано ровно один раз
+- Используется для критичных операций (создание сообщений, пользователей)
+- Требует дополнительных механизмов для обеспечения
+
+*Механизмы обеспечения exactly-once:*
+
+1. **Outbox Pattern:**
+   - Транзакционная запись в PostgreSQL + публикация в Kafka
+   - Debezium читает из outbox и публикует в Kafka
+   - Consumer обрабатывает событие с идемпотентной логикой
+
+2. **Идемпотентные операции:**
+   - Использование уникальных ключей (message_id, event_id)
+   - Upsert операции вместо insert
+   - Проверка существования перед обработкой
+
+3. **Дедупликация:**
+   - Хранение обработанных event_id в Redis или PostgreSQL
+   - TTL для очистки старых записей
+   - Проверка перед обработкой
+
+*Пример реализации exactly-once:*
+
+[source,protobuf]
+----
+syntax = "proto3";
+
+package events;
+
+message MessageCreatedEvent {
+  string message_id = 1;  // уникальный идентификатор
+  string chat_id = 2;
+  string sender_id = 3;
+  string text = 4;
+  string media_id = 5;
+  int64 sent_at = 6;
+  string event_id = 7;  // уникальный идентификатор события для дедупликации
+  int64 event_timestamp = 8;
+}
+
+
+
 
 ==== Базы данных
 
