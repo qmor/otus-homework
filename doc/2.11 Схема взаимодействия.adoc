@@ -121,21 +121,16 @@ Authorization: Bearer <jwt_token>
 .Шаг 4: Клиент -> S3 (прямая загрузка файла)
 * Протокол: HTTPS (multipart/form-data)
 * Использование CDN для ускорения
-* Кэширование в Redis после загрузки
 
 .Шаг 5: S3 -> Kafka (событие загрузки)
 * Топик: `media.uploaded`
 * Формат: JSON/Avro
 
-.Шаг 6: Media Service -> Redis (кэширование метаданных)
-* Сохранение метаданных для быстрого доступа
-* TTL = 10 минут
-
-.Шаг 7: Media Service -> PostgreSQL (сохранение метаданных)
+.Шаг 6: Media Service -> PostgreSQL (сохранение метаданных)
 * Запись информации о файле в БД
 * Связь с сообщением через media_id
 
-.Шаг 8: Search Service -> Elasticsearch (индексация)
+.Шаг 7: Search Service -> Elasticsearch (индексация)
 * Добавление медиа в поисковый индекс
 * Асинхронная обработка
 
@@ -198,6 +193,101 @@ Authorization: Bearer <jwt_token>
 * Отправка уведомлений о приглашении в чат
 * Асинхронная обработка
 
+==== Сценарий 6: CQRS - Command Path (запись сообщения)
+
+.Шаг 1: Клиент -> API Gateway (WebSocket/HTTPS)
+[source,http]
+----
+POST /api/chats/{chat_id}/messages
+Content-Type: application/json
+Authorization: Bearer <jwt_token>
+
+{
+  "text": "Привет, как дела?",
+  "media_id": null
+}
+----
+
+.Шаг 2: API Gateway -> Chat Service (Command) (gRPC)
+* Протокол: gRPC over HTTP/2
+* Формат: Protobuf
+* Rate Limiter: 1000 req/sec на пользователя
+* Command path - только операции записи
+
+.Шаг 3: Chat Service (Command) -> PostgreSQL (Primary)
+* Транзакционное сохранение сообщения
+* Запись в таблицу `messages`
+* Получение message_id
+* Outbox pattern: запись события в таблицу `outbox` в той же транзакции
+
+.Шаг 4: Chat Service (Command) -> Kafka (публикация события)
+* Топик: `chat.message.created`
+* Формат: Protobuf/Avro
+* Репликация: min.insync.replicas = 2
+* Exactly-once семантика через outbox pattern
+
+.Шаг 5: Chat Service (Command) -> Клиент (возврат результата)
+* Протокол: HTTPS (REST)
+* Формат: JSON
+* Возврат message_id и подтверждение записи
+
+==== Сценарий 7: CQRS - Query Path (чтение истории чата)
+
+.Шаг 1: Клиент -> API Gateway (HTTPS)
+[source,http]
+----
+GET /api/chats/{chat_id}/messages?limit=50&before=xxx
+Authorization: Bearer <jwt_token>
+----
+
+.Шаг 2: API Gateway -> Chat Service (Query) (gRPC)
+* Протокол: gRPC over HTTP/2
+* Формат: Protobuf
+* Query path - только операции чтения
+* Rate Limiter: 100 req/sec на пользователя
+
+.Шаг 3: Chat Service (Query) -> PostgreSQL (Read Replica)
+* Чтение из реплики для снижения нагрузки на primary
+* Оптимизированные запросы для чтения истории
+* Использование индексов
+
+.Шаг 4: Chat Service (Query) -> Redis (кэш)
+* Проверка кэша для часто запрашиваемых чатов
+* TTL: 5 минут для истории чата
+* Кэш invalidated через CDC при изменениях
+
+.Шаг 5: Chat Service (Query) -> API Gateway -> Клиент
+* Протокол: HTTPS (REST)
+* Формат: JSON
+* Возврат оптимизированных данных для клиента
+
+==== Сценарий 8: CDC - Обновление Read Models
+
+.Шаг 1: PostgreSQL (WAL) -> Debezium
+* Debezium читает изменения из PostgreSQL WAL
+* Отслеживает таблицы: messages, users, group_chats, chat_participants, media
+* Генерирует события change data capture
+
+.Шаг 2: Debezium -> Kafka (pg.changes topic)
+* Топик: `pg.changes`
+* Формат: JSON/Avro с метаданными об изменениях
+* Partitioning по таблице для упорядоченной обработки
+
+.Шаг 3: Kafka -> Read Services (подписчики)
+* Chat Service (Query) подписывается на изменения messages
+* User Service (Query) подписывается на изменения users
+* Group Chat Service (Query) подписывается на изменения group_chats
+
+.Шаг 4: Read Services -> Read Models
+* Обновление PostgreSQL Read Replicas
+* Инвалидация/обновление Redis кэша
+* Индексация в Elasticsearch
+
+.Шаг 5: Обработка дубликатов (at-least-once семантика)
+* Дедупликация по event_id или message_id
+* Идемпотентные операции (upsert)
+* Логирование для мониторинга
+
 ==== Ключевые моменты взаимодействия
 
 *Протоколы:*
@@ -228,4 +318,4 @@ Authorization: Bearer <jwt_token>
 
 *1 бизнес-событие -> несколько технических запросов:*
 * Отправка сообщения: 1 запрос к API Gateway -> 1 проверка токена -> 1 запись в БД -> 1 публикация в Kafka -> 1 уведомление -> 1 индексация = 6 технических запросов
-* Загрузка медиа: 1 запрос presigned URL -> 1 загрузка в S3 -> 1 событие в Kafka -> 1 запись в БД -> 1 индексация = 5 технических запросов
+* Загрузка медиа: 1 запрос presigned URL -> 1 загрузка в S3 -> 1 событие в Kafka -> 1 запись в БД -> 1 индексация = 4 технических запросов
