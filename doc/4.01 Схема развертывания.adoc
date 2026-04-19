@@ -25,7 +25,7 @@
 - Установка и настройка Redis (вне Kubernetes)
 - Установка MinIO для хранения медиа-файлов
 - Установка HashiCorp Vault для секретов
-- Установка мониторинга и логирования (Prometheus, Grafana, Loki)
+- Установка мониторинга и логирования (Prometheus, Grafana, Opensearch)
 
 [NOTE]
 ====
